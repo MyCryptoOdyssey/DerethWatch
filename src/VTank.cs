@@ -7,7 +7,7 @@ namespace DerethWatch
     // VTank's file is utank2-i.dll but the assembly is "uTank2". Its public GetExternalInterface()
     // returns null, and the cExternalInterfaceTrustedRelay ctor only grants a permission level
     // when VTank itself is the caller, so build the relay and set its permission field directly.
-    // DerethWatch only reads: MacroEnabled, CurrentMetaState, nav profile + waypoint.
+    // DerethWatch only reads: MacroEnabled, CurrentMetaState, nav profile + waypoint, EnableNav.
     internal static class VTank
     {
         static object relay;
@@ -61,6 +61,20 @@ namespace DerethWatch
         internal static object Get(string name) { return Prop(name); }
         internal static bool? MacroEnabled { get { object v = Prop("MacroEnabled"); return v is bool ? (bool?)(bool)v : null; } }
         internal static string MetaState { get { return Prop("CurrentMetaState") as string; } }
+
+        // A VTank option by name, e.g. "EnableNav" (the Navigation switch). null = unknown.
+        internal static object Setting(string name)
+        {
+            try
+            {
+                object r = Relay();
+                if (r == null) return null;
+                MethodInfo m = r.GetType().GetMethod("GetSetting", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(string) }, null);
+                return m == null ? null : m.Invoke(r, new object[] { name });
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); return null; }
+        }
+        internal static bool? NavEnabled { get { object v = Setting("EnableNav"); return v is bool ? (bool?)(bool)v : null; } }
 
         // "<route file> wp <index>/<count>" - which waypoint VTank is heading to
         internal static string Nav

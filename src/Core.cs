@@ -2,7 +2,9 @@
 // Modules (each can be switched on/off per character; a module that throws is switched
 // off and logged, the others keep running):
 //   Stuck detection - logs STUCK with busy/combat/monster signals; /dw unstick or 'Fix automatically' runs
-//                   back off -> jump -> reload route -> give up (stop macro)
+//                   back off -> angled jump right -> angled jump left + reload route -> give up (stop macro)
+//   Stop VT on death - DIED in the log, deaths in Stats; stops the VTank macro so a respawned character
+//                   does not run its route from the lifestone (off = leave death to the meta)
 //   Character Views - eye toggle: live DWM thumbnail strip of every client (UB video patch off while open)
 //   Memory guard  - memory % on the panel, chat warnings, auto-recall / logout at 90% (was LeakWatch)
 //   Stats         - XP, luminance, killing blows, rares (all tiers) this session; shared stats file per client
@@ -31,6 +33,7 @@ namespace DerethWatch
         internal ResumeModule Resume;
         internal StuckModule Stuck;
         internal StatsModule Stats;
+        internal DeathModule Death;
 
         internal bool InGame;
         internal string CharName = "", ServerName = "";
@@ -61,7 +64,8 @@ namespace DerethWatch
             Resume = new ResumeModule(this);
             Stuck = new StuckModule(this);
             Stats = new StatsModule(this);
-            Modules.Add(Fleet); Modules.Add(Memory); Modules.Add(Resume); Modules.Add(Stuck); Modules.Add(Stats);
+            Death = new DeathModule(this);
+            Modules.Add(Fleet); Modules.Add(Memory); Modules.Add(Resume); Modules.Add(Stuck); Modules.Add(Stats); Modules.Add(Death);
             foreach (var m in Modules) { Module mm = m; mm.Guard("startup", mm.Startup); }
 
             try
@@ -144,7 +148,7 @@ namespace DerethWatch
                     if (arg == "views") arg = "fleet";   // panel name is "Character Views"; settings key stays "fleet"
                     foreach (var m in Modules)
                         if (m.Key == arg) { m.SetEnabled(cmd == "on"); Settings.Save(this); Chat(m.Name + ": " + (m.Enabled ? "ON" : "OFF") + " for " + CharName + "."); return; }
-                    Chat("Unknown module '" + arg + "'. Modules: views (fleet), memory, resume, stuck, stats.");
+                    Chat("Unknown module '" + arg + "'. Modules: views (fleet), memory, resume, stuck, stats, death.");
                     return;
                 }
                 foreach (var m in Modules)
@@ -153,7 +157,7 @@ namespace DerethWatch
                     mm.Guard("command", () => { handled = mm.Command(cmd, arg); });
                     if (handled) return;
                 }
-                Chat("/dw status | /dw on|off views|memory|resume|stuck|stats | /dw stats [reset] | /dw strip reset | /dw rares test <item> | /dw resume on|off|sameplace|anywhere|meta on|meta off | /dw restart <hours>|off|now | /dw unstick | /dw stuckfix on|off | /dw stuckgiveup stay|ls|lslogout");
+                Chat("/dw status | /dw on|off views|memory|resume|stuck|stats|death | /dw stats [reset] | /dw strip reset | /dw rares test <item> | /dw resume on|off|sameplace|anywhere|meta on|meta off | /dw restart <hours>|off|now | /dw unstick | /dw stuckfix on|off | /dw stuckgiveup stay|ls|lslogout");
             }
             catch (Exception ex) { Debug.WriteLine(ex); }
         }
@@ -170,7 +174,7 @@ namespace DerethWatch
         VirindiViewService.Controls.HudTabView nbMain;
         // Stats tab: ends under the Character Views group; grows only while the last-rare line or an
         // error notice has something to show (keeps the window tight).
-        const int STATS_TAB_BASE = 248, SETTINGS_TAB_HEIGHT = 284;
+        const int STATS_TAB_BASE = 266, SETTINGS_TAB_HEIGHT = 308;
         internal void FitTab()
         {
             if (View == null || nbMain == null) return;

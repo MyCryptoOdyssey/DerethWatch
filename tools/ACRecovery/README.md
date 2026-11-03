@@ -38,6 +38,7 @@ It never reads or logs passwords: identity comes from ThwargFilter's heartbeat f
 | LOGIN-NUDGE | ACRecovery | relaunched client stuck on the character screen; Enter re-clicked |
 | RESUMED / RESUME-FAILED / RESUME-SKIPPED | DerethWatch | macro restarted / not restarted / skipped (resume off, or the character moved or died) |
 | PLANNED-RESTART / CLIENT-CLOSE | DerethWatch | planned restart started / client being closed |
+| DIED | DerethWatch | character died (place, death message, whether VTank was stopped) |
 | STUCK, STUCK-FIX, STUCK-FIXED, STUCK-CLEARED | DerethWatch | character not moving with the macro on; unstick attempts |
 | STUCK-GAVE-UP / STUCK-RECALL / STUCK-LOGOUT | DerethWatch | 3 attempts failed: macro stopped, lifestone recall, optional logout |
 | RARE | DerethWatch | a rare found (also in `rares.log`) |

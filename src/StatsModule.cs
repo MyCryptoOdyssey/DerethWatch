@@ -8,7 +8,7 @@ using Decal.Adapter;
 
 namespace DerethWatch
 {
-    // Session stats (since this login or the Reset button): XP, luminance earned, killing blows, rares (all tiers).
+    // Session stats (since this login or the Reset button): XP, luminance earned, killing blows, deaths, rares (all tiers).
     // Each client writes its numbers to state\<server>__<char>.stats.txt every 5 s so one
     // client's Watch strip can show the whole fleet.
     // Sources (checked in ACE source 2026-11-02):
@@ -17,6 +17,7 @@ namespace DerethWatch
     //           AvailableLuminance for the baseline, then PrivateUpdatePropertyInt64 0x02CF key 6.
     //           Only increases count, so spending lum doesn't lower "earned".
     //   Kills - KillerNotification (event 0x01AD), sent to the player who landed the killing blow
+    //   Deaths - counted by DeathModule (Decal Death event / VictimNotification 0x01AC)
     //   Rares - system chat "<name> has discovered the <item>!" (Corpse.cs); tier from rares.tsv,
     //           built from ACE LootGenerationFactory_Rare.cs tier lists + world DB names.
     internal class StatsModule : Module
@@ -26,14 +27,14 @@ namespace DerethWatch
         const int PROP_LUM = 6;                        // PropertyInt64.AvailableLuminance
 
         VirindiViewService.Controls.HudCheckBox chkOn;
-        VirindiViewService.Controls.HudStaticText lblSession, lblXp, lblLum, lblKills, lblRares, lblLastRare;
+        VirindiViewService.Controls.HudStaticText lblSession, lblXp, lblLum, lblKills, lblDeaths, lblRares, lblLastRare;
         int tick;
 
         DateTime start = DateTime.MinValue;
         long xp0 = -1;
         long lumNow = -1, lumEarned;                   // lumNow = last known AvailableLuminance (-1 = not seen yet)
         string lumSource = "";
-        int kills, rareCount;                          // every rare counts, tier 1 included (a drop that doesn't move the counter confuses)
+        int kills, deaths, rareCount;                          // every rare counts, tier 1 included (a drop that doesn't move the counter confuses)
         string lastRare = "";
 
         static Dictionary<string, int> rareTier;
@@ -55,6 +56,7 @@ namespace DerethWatch
                 lblXp = (VirindiViewService.Controls.HudStaticText)P.View["lblXp"];
                 lblLum = (VirindiViewService.Controls.HudStaticText)P.View["lblLum"];
                 lblKills = (VirindiViewService.Controls.HudStaticText)P.View["lblKills"];
+                lblDeaths = (VirindiViewService.Controls.HudStaticText)P.View["lblDeaths"];
                 lblRares = (VirindiViewService.Controls.HudStaticText)P.View["lblRares"];
                 lblLastRare = (VirindiViewService.Controls.HudStaticText)P.View["lblLastRare"];
                 var btn = (VirindiViewService.Controls.HudButton)P.View["btnStatsReset"];
@@ -82,7 +84,7 @@ namespace DerethWatch
         {
             start = DateTime.Now;
             try { xp0 = CoreManager.Current.CharacterFilter.TotalXP; } catch { xp0 = -1; }
-            lumEarned = 0; kills = 0; rareCount = 0; lastRare = "";
+            lumEarned = 0; kills = 0; deaths = 0; rareCount = 0; lastRare = "";
         }
 
         public override void Tick()
@@ -145,6 +147,8 @@ namespace DerethWatch
             for (int i = 0; i < count && raw.Length >= p + 12; i++, p += 12)
                 if (BitConverter.ToInt32(raw, p) == PROP_LUM) { LumSeen(BitConverter.ToInt64(raw, p + 4), "login"); return; }
         }
+
+        internal void Died() { deaths++; UpdateLabels(); }
 
         // ---- chat: rares ----
         void OnChat(object sender, ChatTextInterceptEventArgs e)
@@ -227,6 +231,7 @@ namespace DerethWatch
             Set(lblXp, !on ? "" : Short(XpSession) + "   (" + PerHour(XpSession) + "/h)");
             Set(lblLum, !on ? "" : lumNow < 0 ? "not seen yet" : Short(lumEarned) + "   (" + PerHour(lumEarned) + "/h)");
             Set(lblKills, !on ? "" : kills + "   (" + PerHour(kills) + "/h)");
+            Set(lblDeaths, !on ? "" : deaths.ToString(CultureInfo.InvariantCulture));
             Set(lblRares, !on ? "" : rareCount.ToString(CultureInfo.InvariantCulture));
             bool had = lblLastRare != null && lblLastRare.Text != "";
             Set(lblLastRare, !on || lastRare == "" ? "" : "Last: " + lastRare);
@@ -248,6 +253,7 @@ namespace DerethWatch
                 { "Xp", XpSession.ToString(CultureInfo.InvariantCulture) }, { "XpPerHour", PerHour(XpSession) },
                 { "Lum", lumNow < 0 ? "?" : lumEarned.ToString(CultureInfo.InvariantCulture) }, { "LumPerHour", lumNow < 0 ? "?" : PerHour(lumEarned) },
                 { "Kills", kills.ToString(CultureInfo.InvariantCulture) }, { "KillsPerHour", PerHour(kills) },
+                { "Deaths", deaths.ToString(CultureInfo.InvariantCulture) },
                 { "Rares", rareCount.ToString(CultureInfo.InvariantCulture) }, { "LastRare", lastRare },
                 { "Macro", macro == null ? "?" : macro.Value ? "ON" : "OFF" }, { "Nav", VTank.Nav ?? "" },
                 { "Pid", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) },
@@ -274,10 +280,10 @@ namespace DerethWatch
         public override void Status()
         {
             P.Chat(string.Format(CultureInfo.InvariantCulture,
-                "Stats {0}: {1:0} min this session, XP {2} ({3}/h), Lum {4}, killing blows {5} ({6}/h), rares {7}{8}.",
+                "Stats {0}: {1:0} min this session, XP {2} ({3}/h), Lum {4}, killing blows {5} ({6}/h), deaths {9}, rares {7}{8}.",
                 Active ? "ON" : Failed ? "STOPPED (error)" : "OFF", Hours * 60, Short(XpSession), PerHour(XpSession),
                 lumNow < 0 ? "not seen yet" : Short(lumEarned) + " (" + PerHour(lumEarned) + "/h, now " + Short(lumNow) + ", baseline from " + lumSource + ")",
-                kills, PerHour(kills), rareCount, lastRare == "" ? "" : "; last " + lastRare));
+                kills, PerHour(kills), rareCount, lastRare == "" ? "" : "; last " + lastRare, deaths));
         }
     }
 }

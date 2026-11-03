@@ -672,9 +672,10 @@ namespace DerethWatch
                     else
                     {
                         string macro = Util.Get(d, "Macro");
-                        string rares = Util.Get(d, "Rares");
+                        string rares = Util.Get(d, "Rares"), died = Util.Get(d, "Deaths");
                         main = "Lv " + Util.Get(d, "Level") + "  |  " + Util.Get(d, "XpPerHour") + " xp/h  |  " + Util.Get(d, "KillsPerHour") + " kills/h"
-                            + (rares != "" && rares != "0" ? "  |  " + rares + " rare" + (rares == "1" ? "" : "s") : "") + "  |  ";
+                            + (rares != "" && rares != "0" ? "  |  " + rares + " rare" + (rares == "1" ? "" : "s") : "")
+                            + (died != "" && died != "0" ? "  |  " + died + " died" : "") + "  |  ";
                         tail = "VT";                       // the colour says it: green on, red off
                         tailCol = macro == "ON" ? VtOn : macro == "OFF" ? VtOff : CapNormal;   // only the VT part changes colour
                     }

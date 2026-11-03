@@ -5,14 +5,17 @@ using Decal.Adapter.Wrappers;
 
 namespace DerethWatch
 {
-    // Stuck detection + unstick (Phase 2). Logs STUCK when the VTank macro is running a route,
+    // Stuck detection + unstick (Phase 2). Logs STUCK when the VTank macro is running a route with
+    // VTank's Navigation on (macro on + Navigation off = parked on purpose, e.g. at a vendor for
+    // autostack: paused, and it picks up again when Navigation is switched back on),
     // the waypoint has not advanced and the character has moved less than MOVE_M for WINDOW_S
     // seconds. Each line carries the busy / combat / monster signals.
     // Unstick ladder (manual: /dw unstick; automatic only with "Fix automatically" ticked, and
-    // only when VTank is not busy and no monster is near):
+    // only when VTank is not busy, not fighting and no monster is within 5 m):
     //   attempt 1 back off  : /vt stop, turn 180, run ~2 s, stop, /vt start
-    //   attempt 2 jump out  : the same plus /vt jump
-    //   attempt 3 re-pick   : the same plus reload the route so VTank re-picks a nearby waypoint
+    //   attempt 2 jump out  : angled back-right (135): moving /vt jump that way, then run on
+    //   attempt 3 re-pick   : angled back-left (225) + running jump, then reload the route so VTank
+    //                         re-picks a nearby waypoint (each try leaves the corner a different way)
     //   still stuck         : /vt stop, STUCK-GAVE-UP naming the unreachable waypoint (no more tries until
     //                         the macro is started again), then per character: recall to lifestone
     //                         (default) and optionally log out - a stopped character in a dungeon is a target
@@ -21,7 +24,9 @@ namespace DerethWatch
     {
         const double WINDOW_S = 12;      // still for this long = stuck
         const double MOVE_M = 1.5;       // less movement than this counts as "still"
-        const double MONSTER_M = 25;     // monsters closer than this are counted as "nearby"
+        const double MONSTER_M = 25;     // reported in the signals only
+        const double NEAR_M = 5;         // a monster this close = not safe to run off (melee contact is ~1-2 m)
+        const double FIGHT_S = 15;       // damage / evade / own spell / health loss this recent = fighting
         const double RETRY_S = 90;       // stuck again within this long after a fix = next attempt
         const int MAX_ATTEMPTS = 3;
         const double FREE_M = 10;        // a fix only counts if the waypoint advanced or we got this far from the stuck spot
@@ -36,6 +41,7 @@ namespace DerethWatch
         int anchorWp = -1;
         DateTime anchorTime = DateTime.MinValue, stuckSince = DateTime.MinValue;
         int episodes;
+        bool navPaused;                  // macro on but VTank Navigation off: not watching
 
         // unstick ladder state
         int attempt;                     // attempts in the current episode
@@ -44,6 +50,14 @@ namespace DerethWatch
         bool awaitingResult, gaveUp;
         string stuckPos = ""; int stuckWp = -1;   // where the current episode got stuck
         string route = "";
+        int jumpHeading;
+
+        // Combat activity, from the server and Decal (no distance, so a monster asleep behind a wall
+        // doesn't count): AttackerNotification 0x01B1 (you hit), DefenderNotification 0x01B2 (you were
+        // hit), Evasion 0x01B3/0x01B4 (misses), own spell casts, health going down.
+        DateTime lastFight = DateTime.MinValue;
+        string lastFightWhat = "";
+        int lastHealth = -1;
 
         public StuckModule(PluginCore p) : base(p) { }
         public override string Name { get { return "Stuck detection"; } }
@@ -64,14 +78,51 @@ namespace DerethWatch
             chkGiveLogout = (VirindiViewService.Controls.HudCheckBox)P.View["chkStuckLogout"];
             chkGiveLogout.Checked = giveUpLogout;
             chkGiveLogout.Change += (s, e) => { giveUpLogout = chkGiveLogout.Checked; Settings.Save(P); };
+            CoreManager.Current.EchoFilter.ServerDispatch += OnServer;
+            CoreManager.Current.CharacterFilter.SpellCast += OnSpellCast;
+            CoreManager.Current.CharacterFilter.ChangeVital += OnVital;
         }
+        public override void Shutdown()
+        {
+            try { CoreManager.Current.EchoFilter.ServerDispatch -= OnServer; } catch { }
+            try { CoreManager.Current.CharacterFilter.SpellCast -= OnSpellCast; } catch { }
+            try { CoreManager.Current.CharacterFilter.ChangeVital -= OnVital; } catch { }
+        }
+
+        void Fought(string what) { lastFight = DateTime.Now; lastFightWhat = what; }
+        void OnServer(object sender, NetworkMessageEventArgs e)
+        {
+            Guard("network", () =>
+            {
+                if (e.Message == null || e.Message.Type != unchecked((int)0xF7B0)) return;
+                byte[] raw = e.Message.RawData;
+                if (raw == null || raw.Length < 12) return;
+                int off = BitConverter.ToInt32(raw, 0) == e.Message.Type ? 4 : 0;
+                if (raw.Length - off < 12) return;
+                int evt = BitConverter.ToInt32(raw, off + 8);
+                if (evt == 0x01B1) Fought("hit");
+                else if (evt == 0x01B2) Fought("was hit");
+                else if (evt == 0x01B3 || evt == 0x01B4) Fought("evade");
+            });
+        }
+        void OnSpellCast(object sender, SpellCastEventArgs e) { Guard("spellcast", () => Fought("cast")); }
+        void OnVital(object sender, ChangeVitalEventArgs e)
+        {
+            Guard("vital", () =>
+            {
+                if (e.Type != CharFilterVitalType.Health) return;
+                if (lastHealth >= 0 && e.Amount < lastHealth) Fought("health down");
+                lastHealth = e.Amount;
+            });
+        }
+        bool Fighting() { return (DateTime.Now - lastFight).TotalSeconds < FIGHT_S; }
 
         // Auto-fix switched on while already stuck: start now instead of waiting for a new episode.
         void FixNowIfStuck()
         {
             if (!P.InGame || fixStep >= 0 || stuckSince == DateTime.MinValue || gaveUp) return;
             bool quiet; Signals(out quiet);
-            if (!quiet) { P.Chat("Stuck, but VTank is busy or monsters are near - not fixing yet."); return; }
+            if (!quiet) { P.Chat("Stuck, but VTank is busy, fighting, or a monster is within 5 m - not fixing yet."); return; }
             if (attempt >= MAX_ATTEMPTS) GiveUp(); else StartFix("auto (just switched on)");
         }
         public override void SetEnabled(bool on)
@@ -95,8 +146,18 @@ namespace DerethWatch
             d["StuckGiveUpLs"] = giveUpLs ? "1" : "0";
             d["StuckGiveUpLogout"] = giveUpLogout ? "1" : "0";
         }
-        public override void OnLogin() { Reset(); episodes = 0; attempt = 0; gaveUp = false; recallAt = logoutAt = DateTime.MinValue; }
+        public override void OnLogin() { Reset(); lastFight = DateTime.MinValue; lastHealth = -1; episodes = 0; attempt = 0; gaveUp = false; recallAt = logoutAt = DateTime.MinValue; }
         public override void OnLogoff() { Reset(); recallAt = logoutAt = DateTime.MinValue; }
+
+        // A death is not a stuck: cancel any unstick in progress (its last step would /vt start again)
+        // and any pending give-up recall, and start the next episode from attempt 1.
+        internal void OnDeath()
+        {
+            bool fixing = fixStep >= 0;
+            Reset();
+            attempt = 0; gaveUp = false; recallAt = logoutAt = DateTime.MinValue;
+            if (fixing) Util.Log(P.CharName, P.ServerName, "STUCK-CLEARED", "died during an unstick attempt; attempt cancelled");
+        }
 
         void Reset()
         {
@@ -127,12 +188,18 @@ namespace DerethWatch
             if (fixStep >= 0) { FixTick(now); return; }   // our own /vt stop must not count as "macro stopped"
 
             bool? macro = VTank.MacroEnabled;
+            bool navOff = macro == true && VTank.NavEnabled == false;
+            if (navOff != navPaused)
+            {
+                navPaused = navOff;
+                P.Chat(navOff ? "Stuck detection paused: VTank Navigation is off." : "Stuck detection watching again: VTank Navigation is on.");
+            }
             int points = ToInt(VTank.Get("NavNumPoints"));
             string navType = Convert.ToString(VTank.Get("NavType"), CultureInfo.InvariantCulture) ?? "";
             // Only a running route can be "stuck": no macro, no route, or following someone = not watched.
-            if (macro != true || points <= 0 || navType.IndexOf("Follow", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (macro != true || navOff || points <= 0 || navType.IndexOf("Follow", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (stuckSince != DateTime.MinValue) Cleared(now, "macro stopped / route unloaded");
+                if (stuckSince != DateTime.MinValue) Cleared(now, navOff ? "VTank Navigation switched off" : "macro stopped / route unloaded");
                 anchorPos = null; anchorWp = -1; anchorTime = DateTime.MinValue; awaitingResult = false;
                 return;
             }
@@ -144,6 +211,9 @@ namespace DerethWatch
             // VTank busy (buffing, looting, fighting) = standing still on purpose: restart the window.
             object busy = VTank.Get("Decision_GlobalBusyFlag");
             if (busy is bool && (bool)busy) { anchorPos = pos; anchorWp = wp; anchorTime = now; return; }
+            // Fighting = standing still on purpose too: VTank's busy flag stays false in a fight, so recent
+            // combat activity (hit / was hit / evade / cast / health down within FIGHT_S) restarts the window.
+            if (Fighting()) { anchorPos = pos; anchorWp = wp; anchorTime = now; return; }
             if (anchorPos == null) { anchorPos = pos; anchorWp = wp; anchorTime = now; return; }
 
             // After a fix: success only when VTank moved FORWARD past the stuck waypoint (the back-off
@@ -181,7 +251,7 @@ namespace DerethWatch
                 if (awaitingResult) detail = "attempt " + attempt + " did not help; " + detail;
                 awaitingResult = false;
                 string action = !autoFix ? "[auto-fix off, no action]"
-                    : !quiet ? "[not fixing: VTank busy or monsters near]"
+                    : !quiet ? "[not fixing: VTank busy, fighting, or a monster within 5 m]"
                     : attempt >= MAX_ATTEMPTS ? "[giving up]"
                     : "[fixing: attempt " + (attempt + 1) + "]";
                 Util.Log(P.CharName, P.ServerName, "STUCK", detail + " " + action);
@@ -210,7 +280,7 @@ namespace DerethWatch
             fixStart = DateTime.Now;
             fixStep = 0;
             Util.Log(P.CharName, P.ServerName, "STUCK-FIX", "attempt " + attempt + " (" + why + "): "
-                + (attempt == 1 ? "back off" : attempt == 2 ? "back off + jump" : "back off + jump + reload route " + route));
+                + (attempt == 1 ? "back off (180)" : attempt == 2 ? "angled back-right (135) + jump" : "angled back-left (225) + jump + reload route " + route));
         }
 
         // One attempt, paced by the 1 s module tick.
@@ -219,17 +289,29 @@ namespace DerethWatch
             var a = CoreManager.Current.Actions;
             double t = (now - fixStart).TotalSeconds;
             if (fixStep == 0) { Util.Command("/vt stop"); a.SetAutorun(false); fixStep = 1; return; }
-            if (fixStep == 1 && t >= 1) { a.FaceHeading((a.Heading + 180) % 360, true); fixStep = 2; return; }
-            if (fixStep == 2 && t >= 2) { a.SetAutorun(true); fixStep = 3; return; }
-            if (fixStep == 3 && t >= 3) { if (attempt >= 2) Util.Command("/vt jump"); fixStep = 4; return; }
-            if (fixStep == 4 && t >= 4) { a.SetAutorun(false); fixStep = 5; return; }
-            if (fixStep == 5 && t >= 5)
+            if (fixStep == 1 && t >= 1)
+            {
+                jumpHeading = (int)Math.Round(a.Heading + (attempt == 1 ? 180 : attempt == 2 ? 135 : 225)) % 360;
+                a.FaceHeading(jumpHeading, true); fixStep = 2; return;
+            }
+            // Attempt 1 runs straight off. Attempts 2-3 jump first: VTank needs the full form
+            // "/vt jump <heading> <shift> <ms> forward" (a bare /vt jump only prints its usage);
+            // 1000 ms = charge held for a strong jump, forward = moving jump. Then run on after landing.
+            if (fixStep == 2 && t >= 2)
+            {
+                if (attempt >= 2) Util.Command("/vt jump " + jumpHeading.ToString(CultureInfo.InvariantCulture) + " false 1000 forward");
+                else a.SetAutorun(true);
+                fixStep = 3; return;
+            }
+            if (fixStep == 3 && t >= 4) { if (attempt >= 2) a.SetAutorun(true); fixStep = 4; return; }
+            if (fixStep == 4 && t >= 5) { a.SetAutorun(false); fixStep = 5; return; }
+            if (fixStep == 5 && t >= 6)
             {
                 if (attempt >= 3 && route != "" && route != "(none)")
                     Util.Command("/vt nav load " + (route.EndsWith(".nav", StringComparison.OrdinalIgnoreCase) ? route.Substring(0, route.Length - 4) : route));
                 fixStep = 6; return;
             }
-            if (fixStep == 6 && t >= 6)
+            if (fixStep == 6 && t >= 7)
             {
                 Util.Command("/vt start");
                 fixStep = -1;
@@ -258,10 +340,10 @@ namespace DerethWatch
 
         // Everything that might separate "stuck" from "busy": VTank's own busy flag and current
         // rule, client combat mode / busy state, and monsters nearby. quiet = safe to act.
-        static string Signals(out bool quiet)
+        string Signals(out bool quiet)
         {
             object busy = VTank.Get("Decision_GlobalBusyFlag");
-            int nearby = 0;
+            int nearby = 0, close = 0;
             string s = "vtBusy=" + busy + "/" + VTank.Get("Decision_GlobalBusyCount")
                 + " vtRulePri=" + VTank.Get("CurrentRulePriority")
                 + " meta='" + (VTank.MetaState ?? "?") + "'";
@@ -279,13 +361,16 @@ namespace DerethWatch
                 {
                     double d = CoreManager.Current.WorldFilter.Distance(me, o.Id) * 240.0;
                     if (d < MONSTER_M) nearby++;
+                    if (d < NEAR_M) close++;
                     if (d < nearest) nearest = d;
                 }
                 s += string.Format(CultureInfo.InvariantCulture, " monsters<{0:0}m={1} nearest={2}", MONSTER_M, nearby,
                     nearest == double.MaxValue ? "none" : nearest.ToString("0", CultureInfo.InvariantCulture) + "m");
             }
             catch { }
-            quiet = !(busy is bool && (bool)busy) && nearby == 0;
+            bool fighting = Fighting();
+            s += " lastFight=" + (lastFight == DateTime.MinValue ? "never" : (DateTime.Now - lastFight).TotalSeconds.ToString("0", CultureInfo.InvariantCulture) + "s ago (" + lastFightWhat + ")");
+            quiet = !(busy is bool && (bool)busy) && !fighting && close == 0;
             return s;
         }
 
@@ -330,7 +415,7 @@ namespace DerethWatch
         public override void Status()
         {
             P.Chat(string.Format("Stuck detection {0}, auto-fix {1}: {2} episode(s) this session{3}{4}.",
-                Active ? "ON" : Failed ? "STOPPED (error)" : "OFF", autoFix ? "ON" : "OFF", episodes,
+                Active ? (navPaused ? "ON (paused: VTank Navigation off)" : "ON") : Failed ? "STOPPED (error)" : "OFF", autoFix ? "ON" : "OFF", episodes,
                 stuckSince != DateTime.MinValue ? ", STUCK now for " + (DateTime.Now - stuckSince).TotalSeconds.ToString("0") + "s" : "",
                 attempt > 0 ? ", attempts this episode " + attempt : ""));
         }

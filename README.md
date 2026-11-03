@@ -14,13 +14,14 @@ The panel has two tabs. The window resizes to the open tab.
 ### Stats tab
 
 - **Session stats** for this character since login (or the **Reset** button): XP, luminance
-  earned, killing blows (each with a per-hour rate; rates show `--` for the first minute) and
+  earned, killing blows (each with a per-hour rate; rates show `--` for the first minute), deaths and
   rares found, with the last rare and its tier (1-6).
   - XP: Decal `CharacterFilter.TotalXP`.
   - Luminance: read from the server's property updates (login description + updates, key 6),
     gains only, so spending luminance doesn't lower "earned".
   - Kills: the server's killer notification (event 0x01AD), i.e. killing blows only. Pet kills and
     kills finished by someone else don't count.
+  - Deaths: the server's death-count update (sent on every death, `@die` included), plus its death message when there is one.
   - Rares: the "*name* has discovered the *item*!" announcement for this character. Every rare
     counts; the tier comes from a built-in table (`src/rares.tsv`, 295 names, from ACEmulator's rare
     tier lists). Every rare is also written to `rares.log`.
@@ -29,7 +30,7 @@ The panel has two tabs. The window resizes to the open tab.
     each) or `Client View` (live pictures only).
   - **Layout**: `Horizontal` (bottom-centre) or `Vertical` (right edge).
   - **In Game View Only**: hide the strip when something other than AC is in front.
-  - Caption: `Lv | xp/h | kills/h | rares | VT` in gold; **VT** is green while Virindi Tank's macro
+  - Caption: `Lv | xp/h | kills/h | rares | died | VT` in gold (rares and died only once there are any); **VT** is green while Virindi Tank's macro
     runs, red when it is off; grey "no stats" = that client has Stats off or isn't in game.
   - Click a character to switch to that client. **Ctrl + drag** moves the whole strip; each
     Show/Layout combination remembers its own position (`/dw strip reset` clears them).
@@ -51,9 +52,15 @@ The panel has two tabs. The window resizes to the open tab.
     state.
   - **Planned restart** (`/dw restart <hours>`): stop the macro, log out, close the client
     politely (so the server frees the account at once), let the launcher relaunch it, resume.
-- **Stuck detection**: macro on, VTank not busy, moved less than 1.5 m in 12 s -> logged with the
-  route waypoint and why it isn't "busy". With **Fix automatically**: up to 3 attempts (back off;
-  + jump; + reload the route), judged by forward progress along the route. After 3 failures it
+- **Stop VT on death** (default on): every death is logged (`DIED`, with place and the death message)
+  and counted in Stats. With this ticked the VTank macro is stopped, so the respawned character waits at
+  the lifestone instead of running its route from there; start VTank again when ready. Untick it if
+  your meta handles death itself (rebuff, walk back).
+- **Stuck detection**: macro on with VTank's Navigation on (macro on + Navigation off, e.g. parked at a
+  vendor for autostack, pauses it until Navigation is back on), VTank not busy and not fighting (no hit, being hit, evade, own spell cast or health loss in the last 15 s), moved less than 1.5 m in 12 s -> logged with the
+  route waypoint and why it isn't "busy". With **Fix automatically**: up to 3 attempts, each leaving
+  the spot a different way (straight back; angled back-right with a running jump; angled back-left
+  with a running jump + reload the route), judged by forward progress along the route. Fixes only run when not fighting and no monster is within 5 m. After 3 failures it
   stops the macro, names the waypoint ("fix the route"), and by default recalls to the lifestone
   (**+ log out** optional).
 
@@ -83,7 +90,7 @@ client has it loaded).
 
 ```
 /dw status
-/dw on <module>    /dw off <module>      modules: views, memory, resume, stuck, stats
+/dw on <module>    /dw off <module>      modules: views, memory, resume, stuck, stats, death
 /dw stats          /dw stats reset
 /dw rares test <item name>               dry run: shows the tier, logs nothing
 /dw resume on|off|sameplace|anywhere|meta on|meta off
