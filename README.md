@@ -117,3 +117,7 @@ Virindi View Service. Check the paths at the top of `build.bat`, then run it; ou
   hands the client close to a small detached `taskkill` helper.
 - Decal, Virindi Tank, Virindi View Service and UtilityBelt belong to their authors and are not
   included here.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
