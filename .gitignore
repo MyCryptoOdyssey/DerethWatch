@@ -1,0 +1,4 @@
+bin/
+state/
+*.log
+*.tmp
